@@ -1,0 +1,20 @@
+[package]
+name = "rainsonet-state"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "State management for RAINSONET"
+
+[dependencies]
+rainsonet-core = { path = "../core" }
+rainsonet-crypto = { path = "../crypto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+sled = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "rainsonet-crypto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Cryptographic primitives for RAINSONET"
+
+[dependencies]
+rainsonet-core = { path = "../core" }
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+zeroize = "1.7"

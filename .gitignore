@@ -1,0 +1,27 @@
+# Ignore Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Ignore node modules for SDK
+sdk/node_modules/
+sdk/dist/
+
+# Ignore IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore data directories
+data/
+*.db
+
+# Ignore key files
+*.key
+node_key.json
+wallets/
