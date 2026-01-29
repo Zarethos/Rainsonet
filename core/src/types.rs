@@ -2,7 +2,7 @@
 //! 
 //! Defines fundamental data structures used across the system.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// 32-byte address derived from public key hash
@@ -90,7 +90,7 @@ impl fmt::Debug for Hash {
 }
 
 /// 64-byte signature
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Signature(pub [u8; 64]);
 
 impl Signature {
@@ -104,6 +104,45 @@ impl Signature {
     
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
+    }
+}
+
+impl Serialize for Signature {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_hex())
+        } else {
+            serializer.serialize_bytes(&self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Signature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
+            let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+            if bytes.len() != 64 {
+                return Err(serde::de::Error::custom("signature must be 64 bytes"));
+            }
+            let mut arr = [0u8; 64];
+            arr.copy_from_slice(&bytes);
+            Ok(Signature(arr))
+        } else {
+            let bytes = <Vec<u8>>::deserialize(deserializer)?;
+            if bytes.len() != 64 {
+                return Err(serde::de::Error::custom("signature must be 64 bytes"));
+            }
+            let mut arr = [0u8; 64];
+            arr.copy_from_slice(&bytes);
+            Ok(Signature(arr))
+        }
     }
 }
 
