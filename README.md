@@ -1,24 +1,27 @@
 # RAINSONET
 
-A decentralized payment infrastructure built for speed and simplicity.
+Open-source software for building decentralized state replication networks.
 
-## What is RAINSONET?
+## Overview
 
-RAINSONET is a state-based payment system. Unlike traditional blockchains that store a chain of blocks, RAINSONET maintains account states directly. This means faster transactions and instant finality.
+RAINSONET is a consensus engine that replicates state across a distributed network of nodes. It provides the primitives for building applications that require agreement on shared state without a central coordinator.
 
-RELYO is the payment protocol that runs on top of RAINSONET. Think of RAINSONET as the engine and RELYO as the application layer for moving money around.
+This repository contains:
+- The core consensus engine (RAINSONET)
+- A reference implementation of a value transfer module (RELYO)
+- Development tools (CLI, SDK)
 
-## Why build this?
+RELYO is one possible module built on the engine. The engine itself is general-purpose and can be used for other applications requiring distributed state agreement.
 
-Most blockchain systems are slow. Bitcoin takes an hour to confirm, Ethereum takes minutes. We wanted something that confirms in seconds without sacrificing decentralization.
+## Architecture
 
-The key differences:
-- No mining or proof of work
-- Validators vote on state changes directly
-- Transactions finalize immediately once consensus is reached
-- Simple account model (address to balance mapping)
+RAINSONET uses a state-based model rather than a chain-of-blocks model. Nodes maintain a mapping of addresses to values, and validators reach agreement on state transitions through a voting protocol.
 
-## Project Structure
+Key design choices:
+- Validators vote on proposed state changes
+- State transitions require 2/3 validator agreement
+- Once finalized, state changes are not reversible
+- Account-based model (address to value mapping)
 
 ```
 rainsonet/
@@ -27,26 +30,26 @@ rainsonet/
 ├── state/          State storage (memory and disk)
 ├── p2p/            Peer-to-peer networking with libp2p
 ├── consensus/      Validator voting mechanism
-├── modules/relyo/  Payment module
-├── node/           Full node implementation
+├── modules/relyo/  Reference value transfer module
+├── node/           Node implementation
 ├── cli/            Command line tools
-└── sdk/            TypeScript SDK for applications
+└── sdk/            TypeScript SDK
 ```
 
 ## Building
 
-You need Rust 1.75 or later.
+Requires Rust 1.75 or later.
 
 ```bash
 cd rainsonet
 cargo build --release
 ```
 
-The binaries will be in `target/release/`.
+Binaries output to `target/release/`.
 
 ## Running a Node
 
-Start a local validator node:
+Start a local node:
 
 ```bash
 ./target/release/rainsonet-node run --validator --api-addr 127.0.0.1:8080
@@ -64,35 +67,35 @@ Create genesis configuration:
 ./target/release/rainsonet-node genesis --output genesis.json
 ```
 
-## Using the CLI
+## CLI Usage
 
-Create a wallet:
+Create a keypair:
 
 ```bash
 ./target/release/relyo wallet create mywallet
 ```
 
-Check balance:
+Query state:
 
 ```bash
 ./target/release/relyo balance --wallet mywallet
 ```
 
-Send tokens:
+Submit a transaction:
 
 ```bash
 ./target/release/relyo send --from mywallet --to <address> --amount 10
 ```
 
-Check node status:
+Query node:
 
 ```bash
 ./target/release/relyo status
 ```
 
-## TypeScript SDK
+## SDK
 
-For JavaScript/TypeScript applications:
+TypeScript SDK for building applications:
 
 ```bash
 cd sdk
@@ -100,7 +103,7 @@ npm install
 npm run build
 ```
 
-Basic usage:
+Example:
 
 ```typescript
 import { Wallet, RelyoClient } from '@rainsonet/sdk';
@@ -108,10 +111,8 @@ import { Wallet, RelyoClient } from '@rainsonet/sdk';
 const wallet = await Wallet.create();
 const client = RelyoClient.devnet();
 
-// check balance
 const balance = await client.getBalance(wallet.address);
 
-// send tokens
 const tx = await client.send({
   wallet,
   to: recipientAddress,
@@ -119,16 +120,16 @@ const tx = await client.send({
 });
 ```
 
-## API Endpoints
+## API
 
-The node exposes a REST API:
+The node exposes an HTTP API:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | /health | GET | Health check |
 | /status | GET | Node status |
-| /account/:address | GET | Account info |
-| /balance/:address | GET | Balance |
+| /account/:address | GET | Account state |
+| /balance/:address | GET | Account balance |
 | /transaction | POST | Submit transaction |
 | /transaction/:id | GET | Transaction status |
 
@@ -149,33 +150,50 @@ Storage:
 - sled embedded database for persistence
 
 Consensus:
-- Validator-based voting
-- 2/3 majority required for finality
-- No block reorganizations possible
+- Validator-based voting protocol
+- 2/3 majority required for state finalization
+- Deterministic finality (no reorganizations)
 
-## Token Economics
+## RELYO Module
 
-- Token: RELYO
-- Decimals: 18
-- Max supply: 100,000,000 RELYO
-- Transaction fees are configurable
-- Optional fee burn mechanism
+The RELYO module is a reference implementation demonstrating value transfer on the RAINSONET engine. It implements:
 
-## Current Limitations
+- Account balances (address to uint mapping)
+- Signed transactions (from, to, amount, fee, nonce)
+- Nonce-based replay protection
+- Configurable transaction fees
 
-This is version 1. Some things are not implemented yet:
+Configuration parameters in the reference implementation:
+- Unit decimals: 18
+- Genesis allocations: configurable
+- Fee handling: configurable
 
-- Multi-node networking (works locally)
-- Validator staking
+The RELYO module is provided as example code. It is not a financial product or service.
+
+## Current Status
+
+This is experimental software under active development.
+
+Not yet implemented:
+- Multi-node network bootstrapping
+- Validator rotation
 - State pruning
-- Light clients
-
-These are planned for future versions.
+- Light client protocol
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) - System design and internals
-- [SDK Guide](docs/SDK.md) - TypeScript SDK documentation
+- [Architecture](docs/ARCHITECTURE.md) - Design documentation
+- [SDK Guide](docs/SDK.md) - SDK documentation
+
+## Disclaimer
+
+This software is provided as-is under the Apache License 2.0.
+
+RAINSONET is open-source software for research and development purposes. It is not a financial service, payment processor, money transmitter, or custodian. The developers do not operate any network, hold any funds, or provide any services.
+
+Users who run this software do so at their own risk and are responsible for compliance with applicable laws in their jurisdiction.
+
+The RELYO module is reference code demonstrating the engine's capabilities. Any units tracked by the module are internal accounting units with no inherent value.
 
 ## License
 
