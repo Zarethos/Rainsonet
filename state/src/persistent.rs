@@ -1,223 +1,234 @@
-//! Persistent state store using sled embedded database
+//! Persistent state store using sled database
 
-use async_trait::async_trait;
 use parking_lot::RwLock;
-use rainsonet_core::{
-    RainsonetError, RainsonetResult, StateChange, StateMutator, StateProvider, StateRoot,
-    StateVersion,
-};
-use sled::Db;
+use rainsonet_core::{Hash, RainsonetError, RainsonetResult, StateRoot, StateVersion};
+use sled::{Db, Tree};
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, error, info};
 
-use crate::store::{StateDiff, StateEntry, StateStore};
+use crate::store::{
+    account_key, compute_state_root, AccountState, StateChangeOp, StateDiff, StateEntry,
+};
+use crate::memory::MemoryStateStore;
 
-const VERSION_KEY: &[u8] = b"__version__";
-const DIFF_PREFIX: &[u8] = b"__diff__:";
+const STATE_TREE: &str = "state";
+const META_TREE: &str = "meta";
+const HISTORY_TREE: &str = "history";
+const VERSION_KEY: &[u8] = b"version";
 
-/// Persistent state store using sled
+/// Persistent state store backed by sled database
 pub struct PersistentStateStore {
     db: Db,
+    state: Tree,
+    meta: Tree,
+    history: Tree,
     version: RwLock<StateVersion>,
 }
 
 impl PersistentStateStore {
-    /// Open or create a persistent store at the given path
     pub fn open<P: AsRef<Path>>(path: P) -> RainsonetResult<Self> {
-        let db = sled::open(path).map_err(|e| RainsonetError::StorageError(e.to_string()))?;
+        let db = sled::open(path).map_err(|e| RainsonetError::Internal(e.to_string()))?;
         
-        // Load version
-        let version = match db.get(VERSION_KEY) {
-            Ok(Some(bytes)) => {
+        let state = db
+            .open_tree(STATE_TREE)
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
+        let meta = db
+            .open_tree(META_TREE)
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
+        let history = db
+            .open_tree(HISTORY_TREE)
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
+        
+        // Load version from disk or start at 0
+        let version = match meta.get(VERSION_KEY).map_err(|e| RainsonetError::Internal(e.to_string()))? {
+            Some(bytes) => {
                 let v = u64::from_le_bytes(bytes.as_ref().try_into().unwrap_or([0; 8]));
                 StateVersion::new(v)
             }
-            _ => StateVersion::new(0),
+            None => StateVersion::new(0),
         };
-        
-        info!("Opened persistent store at version {}", version);
         
         Ok(Self {
             db,
+            state,
+            meta,
+            history,
             version: RwLock::new(version),
         })
     }
     
-    /// Flush to disk
-    pub fn flush(&self) -> RainsonetResult<()> {
-        self.db
-            .flush()
-            .map_err(|e| RainsonetError::StorageError(e.to_string()))?;
-        Ok(())
-    }
-    
-    fn save_version(&self, version: StateVersion) -> RainsonetResult<()> {
-        self.db
-            .insert(VERSION_KEY, &version.0.to_le_bytes())
-            .map_err(|e| RainsonetError::StorageError(e.to_string()))?;
-        Ok(())
-    }
-    
-    fn save_diff(&self, diff: &StateDiff) -> RainsonetResult<()> {
-        let key = format!("{}:{}", String::from_utf8_lossy(DIFF_PREFIX), diff.to_version.0);
-        let value = bincode::serialize(diff).map_err(|e| RainsonetError::SerializationError(e.to_string()))?;
-        self.db
-            .insert(key.as_bytes(), value)
-            .map_err(|e| RainsonetError::StorageError(e.to_string()))?;
-        Ok(())
-    }
-    
-    fn is_internal_key(key: &[u8]) -> bool {
-        key.starts_with(b"__")
-    }
-}
-
-#[async_trait]
-impl StateProvider for PersistentStateStore {
-    async fn version(&self) -> StateVersion {
+    pub fn version(&self) -> StateVersion {
         *self.version.read()
     }
     
-    async fn root(&self) -> StateRoot {
-        self.compute_root().await.unwrap_or(rainsonet_core::Hash::ZERO)
+    pub fn root(&self) -> StateRoot {
+        self.compute_root().unwrap_or(Hash::ZERO)
     }
     
-    async fn get(&self, key: &[u8]) -> RainsonetResult<Option<Vec<u8>>> {
-        match self.db.get(key) {
-            Ok(Some(ivec)) => Ok(Some(ivec.to_vec())),
-            Ok(None) => Ok(None),
-            Err(e) => Err(RainsonetError::StorageError(e.to_string())),
-        }
+    pub fn get(&self, key: &[u8]) -> RainsonetResult<Option<Vec<u8>>> {
+        self.state
+            .get(key)
+            .map(|opt| opt.map(|v| v.to_vec()))
+            .map_err(|e| RainsonetError::Internal(e.to_string()))
     }
     
-    async fn exists(&self, key: &[u8]) -> RainsonetResult<bool> {
-        match self.db.contains_key(key) {
-            Ok(exists) => Ok(exists),
-            Err(e) => Err(RainsonetError::StorageError(e.to_string())),
-        }
+    pub fn exists(&self, key: &[u8]) -> RainsonetResult<bool> {
+        self.state
+            .contains_key(key)
+            .map_err(|e| RainsonetError::Internal(e.to_string()))
     }
-}
-
-#[async_trait]
-impl StateMutator for PersistentStateStore {
-    async fn set(&self, key: &[u8], value: &[u8]) -> RainsonetResult<()> {
-        self.db
+    
+    pub fn set(&self, key: &[u8], value: &[u8]) -> RainsonetResult<()> {
+        self.state
             .insert(key, value)
-            .map_err(|e| RainsonetError::StorageError(e.to_string()))?;
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
         Ok(())
     }
     
-    async fn delete(&self, key: &[u8]) -> RainsonetResult<()> {
-        self.db
+    pub fn delete(&self, key: &[u8]) -> RainsonetResult<()> {
+        self.state
             .remove(key)
-            .map_err(|e| RainsonetError::StorageError(e.to_string()))?;
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
         Ok(())
     }
     
-    async fn apply_batch(&self, changes: Vec<StateChange>) -> RainsonetResult<StateVersion> {
+    pub fn apply_batch(&self, changes: Vec<StateChangeOp>) -> RainsonetResult<StateVersion> {
         let old_version = *self.version.read();
         let new_version = old_version.next();
-        let mut diff = StateDiff::new(old_version, new_version);
         
-        // Create batch
+        // Create a batch for atomic writes
         let mut batch = sled::Batch::default();
+        let mut diff = StateDiff::new(old_version, new_version);
         
         for change in changes {
             match change {
-                StateChange::Set { key, value } => {
+                StateChangeOp::Set { key, value } => {
                     diff.add(key.clone(), value.clone());
-                    batch.insert(key, value);
+                    batch.insert(key.as_slice(), value.as_slice());
                 }
-                StateChange::Delete { key } => {
+                StateChangeOp::Delete { key } => {
                     diff.remove(key.clone());
-                    batch.remove(key);
+                    batch.remove(key.as_slice());
                 }
             }
         }
         
-        // Apply batch atomically
-        self.db
+        // Apply state changes atomically
+        self.state
             .apply_batch(batch)
-            .map_err(|e| RainsonetError::StorageError(e.to_string()))?;
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
         
-        // Save version and diff
-        self.save_version(new_version)?;
-        self.save_diff(&diff)?;
+        // Save new version
+        self.meta
+            .insert(VERSION_KEY, &new_version.0.to_le_bytes())
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
         
+        // Save diff to history
+        let diff_key = old_version.0.to_le_bytes();
+        let diff_bytes = serde_json::to_vec(&diff)
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
+        self.history
+            .insert(&diff_key, diff_bytes)
+            .map_err(|e| RainsonetError::Internal(e.to_string()))?;
+        
+        // Flush to disk
+        self.db.flush().map_err(|e| RainsonetError::Internal(e.to_string()))?;
+        
+        // Update in-memory version
         *self.version.write() = new_version;
-        
-        debug!("Applied batch, new version: {}", new_version);
         
         Ok(new_version)
     }
-}
-
-#[async_trait]
-impl StateStore for PersistentStateStore {
-    async fn all_entries(&self) -> RainsonetResult<Vec<StateEntry>> {
-        let mut entries = Vec::new();
+    
+    pub fn all_entries(&self) -> RainsonetResult<Vec<StateEntry>> {
+        let entries: Result<Vec<StateEntry>, _> = self
+            .state
+            .iter()
+            .map(|result| {
+                result.map(|(key, value)| StateEntry {
+                    key: key.to_vec(),
+                    value: value.to_vec(),
+                })
+            })
+            .collect();
         
-        for item in self.db.iter() {
-            match item {
-                Ok((key, value)) => {
-                    if !Self::is_internal_key(&key) {
-                        entries.push(StateEntry {
-                            key: key.to_vec(),
-                            value: value.to_vec(),
-                        });
-                    }
-                }
-                Err(e) => {
-                    error!("Error iterating state: {}", e);
-                    return Err(RainsonetError::StorageError(e.to_string()));
-                }
-            }
-        }
-        
-        Ok(entries)
+        entries.map_err(|e| RainsonetError::Internal(e.to_string()))
     }
     
-    async fn snapshot(&self) -> RainsonetResult<Box<dyn StateStore>> {
-        // For persistent store, we create an in-memory snapshot
-        use crate::memory::MemoryStateStore;
-        
-        let entries = self.all_entries().await?;
+    pub fn compute_root(&self) -> RainsonetResult<StateRoot> {
+        let entries = self.all_entries()?;
+        Ok(compute_state_root(&entries))
+    }
+    
+    pub fn snapshot(&self) -> MemoryStateStore {
+        let entries = self.all_entries().unwrap_or_default();
         let data: Vec<(Vec<u8>, Vec<u8>)> = entries
             .into_iter()
             .map(|e| (e.key, e.value))
             .collect();
-        
-        Ok(Box::new(MemoryStateStore::with_data(data)))
+        MemoryStateStore::with_data(data)
     }
     
-    async fn diff(&self, from_version: StateVersion) -> RainsonetResult<StateDiff> {
+    pub fn diff(&self, from_version: StateVersion) -> RainsonetResult<StateDiff> {
         let current_version = *self.version.read();
         let mut combined = StateDiff::new(from_version, current_version);
         
-        // Load diffs from storage
-        for v in (from_version.0 + 1)..=current_version.0 {
-            let key = format!("{}:{}", String::from_utf8_lossy(DIFF_PREFIX), v);
-            if let Ok(Some(bytes)) = self.db.get(key.as_bytes()) {
-                if let Ok(diff) = bincode::deserialize::<StateDiff>(&bytes) {
-                    for (k, val) in diff.added {
-                        combined.add(k, val);
-                    }
-                    for k in diff.removed {
-                        combined.remove(k);
-                    }
-                }
+        // Read all diffs from history
+        for result in self.history.range(from_version.0.to_le_bytes()..) {
+            let (_, diff_bytes) = result.map_err(|e| RainsonetError::Internal(e.to_string()))?;
+            let d: StateDiff = serde_json::from_slice(&diff_bytes)
+                .map_err(|e| RainsonetError::Internal(e.to_string()))?;
+            
+            for (key, value) in d.added {
+                combined.add(key, value);
+            }
+            for key in d.removed {
+                combined.remove(key);
             }
         }
         
         Ok(combined)
     }
+    
+    // Account-specific methods
+    
+    pub fn get_account(&self, address: &[u8]) -> RainsonetResult<Option<AccountState>> {
+        let key = account_key(address);
+        match self.get(&key)? {
+            Some(bytes) => Ok(Some(AccountState::from_bytes(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+    
+    pub fn set_account(&self, address: &[u8], state: &AccountState) -> RainsonetResult<()> {
+        let key = account_key(address);
+        self.set(&key, &state.to_bytes())
+    }
+    
+    pub fn get_balance(&self, address: &[u8]) -> RainsonetResult<u128> {
+        Ok(self.get_account(address)?.map(|a| a.balance).unwrap_or(0))
+    }
+    
+    pub fn get_nonce(&self, address: &[u8]) -> RainsonetResult<u64> {
+        Ok(self.get_account(address)?.map(|a| a.nonce).unwrap_or(0))
+    }
+    
+    /// Compact the database
+    pub fn compact(&self) -> RainsonetResult<()> {
+        // Sled doesn't have explicit compaction, but we can flush
+        self.db.flush().map_err(|e| RainsonetError::Internal(e.to_string()))
+    }
+    
+    /// Get database size estimate
+    pub fn size_estimate(&self) -> RainsonetResult<u64> {
+        Ok(self.state.len() as u64)
+    }
 }
 
-/// Shared persistent store
+/// Thread-safe persistent store wrapper
 pub type SharedPersistentStateStore = Arc<PersistentStateStore>;
 
-/// Create a shared persistent store
+/// Create a shared persistent state store
 pub fn create_persistent_store<P: AsRef<Path>>(path: P) -> RainsonetResult<SharedPersistentStateStore> {
     Ok(Arc::new(PersistentStateStore::open(path)?))
 }
@@ -225,38 +236,43 @@ pub fn create_persistent_store<P: AsRef<Path>>(path: P) -> RainsonetResult<Share
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use tempfile::TempDir;
     
-    #[tokio::test]
-    async fn test_persistent_store_basic() {
-        let dir = tempdir().unwrap();
-        let store = PersistentStateStore::open(dir.path().join("test.db")).unwrap();
+    #[test]
+    fn test_persistent_store_basic() {
+        let tmp = TempDir::new().unwrap();
+        let store = PersistentStateStore::open(tmp.path()).unwrap();
         
-        // Set and get
-        store.set(b"key1", b"value1").await.unwrap();
-        let value = store.get(b"key1").await.unwrap();
+        store.set(b"key1", b"value1").unwrap();
+        let value = store.get(b"key1").unwrap();
         assert_eq!(value, Some(b"value1".to_vec()));
         
-        store.flush().unwrap();
+        store.delete(b"key1").unwrap();
+        let value = store.get(b"key1").unwrap();
+        assert_eq!(value, None);
     }
     
-    #[tokio::test]
-    async fn test_persistent_store_persistence() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("persist.db");
+    #[test]
+    fn test_persistent_store_reopen() {
+        let tmp = TempDir::new().unwrap();
         
         // Write data
         {
-            let store = PersistentStateStore::open(&path).unwrap();
-            store.set(b"key1", b"value1").await.unwrap();
-            store.flush().unwrap();
+            let store = PersistentStateStore::open(tmp.path()).unwrap();
+            store.set(b"key1", b"value1").unwrap();
+            let changes = vec![StateChangeOp::Set {
+                key: b"k2".to_vec(),
+                value: b"v2".to_vec(),
+            }];
+            store.apply_batch(changes).unwrap();
         }
         
-        // Read data after reopening
+        // Reopen and verify
         {
-            let store = PersistentStateStore::open(&path).unwrap();
-            let value = store.get(b"key1").await.unwrap();
-            assert_eq!(value, Some(b"value1".to_vec()));
+            let store = PersistentStateStore::open(tmp.path()).unwrap();
+            assert_eq!(store.get(b"key1").unwrap(), Some(b"value1".to_vec()));
+            assert_eq!(store.get(b"k2").unwrap(), Some(b"v2".to_vec()));
+            assert_eq!(store.version().0, 1);
         }
     }
 }
