@@ -289,7 +289,7 @@ impl fmt::Debug for Timestamp {
 }
 
 /// State version for optimistic concurrency
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 pub struct StateVersion(pub u64);
 
 impl StateVersion {
